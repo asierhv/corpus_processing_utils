@@ -1,16 +1,12 @@
 import json
 import pandas as pd
+import sox
 import os
 import re
 import statistics
 import shutil
 from tqdm import tqdm
-import jiwer
-from datasets import load_dataset
-import copy
-import sox
-from pydub import AudioSegment
-from transformers.models.whisper.english_normalizer import BasicTextNormalizer
+from datasets import load_dataset, Dataset
 
 #############################################################
 
@@ -59,16 +55,17 @@ def write_manifest(manifest_filepath, data, ensure_ascii: bool = False):
     print("End Writing manifest:", manifest_filepath)
 
 @print_separator("#")
-def tsv2data(tsv_filepath,clips_folder: str=""):
+def tsv2data(tsv_filepath,clips_folder: str = ""):
     data=[]
     df = pd.read_csv(tsv_filepath, sep='\t')
-    for idx in tqdm(range(len(df))):
-        audio_filepath = clips_folder + "/" + df['file_name'][idx]
+    for idx in tqdm(range(len(df))):   
+        # audio_filepath = os.path.join(clips_folder,df['path'][idx])
         item = {
-            'audio_filepath': audio_filepath,
-            'text': df['transcription'][idx],
+            'source': df['source'][idx],
+            'audio_filepath': df['audio_filepath'][idx],
+            'text': df['text'][idx],
+            'duration': df['duration'][idx],
             # 'client_id': df['client_id'][idx],
-            'duration': df['duration'][idx]
             # 'up_votes': int(df['up_votes'].fillna(0)[idx]),
             # 'down_votes': int(df['down_votes'].fillna(0)[idx]),
             # 'age': df['age'].fillna(pd.NaT)[idx], 
@@ -79,6 +76,25 @@ def tsv2data(tsv_filepath,clips_folder: str=""):
         }
         data.append(item)
     return data
+
+def data2df(data):
+    source_list = []
+    audio_filepath_list = []
+    text_list = []
+    duration_list = []
+    for item in data:
+        source_list.append(item["source"])
+        audio_filepath_list.append(item["audio_filepath"])
+        text_list.append(item["text"])
+        duration_list.append(item["duration"])
+    df = pd.DataFrame({
+        "source": source_list,
+        "audio_filepath": audio_filepath_list,
+        "text": text_list,
+        "duration": duration_list
+    })
+    return df
+
 
 @print_separator("#")
 def decode_clips(data, destination_folder, samplerate: int = 16000):
@@ -97,22 +113,6 @@ def decode_clips(data, destination_folder, samplerate: int = 16000):
         decoded_item['duration'] = sox.file_info.duration(decoded_item['audio_filepath'])
         decoded_data.append(decoded_item)
     return decoded_data
-
-@print_separator("#")
-def convert2mp3(data,output_dir):
-    #This function is very specefic, modify it where its needed when you use it
-    if not os.path.exists(output_dir):
-        os.mkdir(output_dir)
-    for item in tqdm(data):
-        audio_path,audio_name = os.path.split(item["audio_filepath"])
-        _,speaker_folder = os.path.split(audio_path)
-        new_output_dir = os.path.join(output_dir,speaker_folder)
-        if not os.path.exists(new_output_dir):
-            os.mkdir(new_output_dir)
-        output_filepath = os.path.join(new_output_dir,audio_name.replace(".wav",".mp3"))
-        audio = AudioSegment.from_wav(item["audio_filepath"])
-        audio = audio.set_frame_rate(16000)
-        audio.export(output_filepath,format="mp3")
 
 @print_separator("#")
 def pairedfiles2data(clips_folder, sentences_folder):
@@ -134,47 +134,47 @@ def pairedfiles2data(clips_folder, sentences_folder):
             data.append(item)
     return data
 
-def remove_special_chars(item, cp, tag):
-    chars_to_ignore = "[\:\-‑;()«»…\]\[/\*–‽+\%&_\\½√><|€™$•¼}º{~—=“\"”″‟„’'‘`ʽ']\n\x01\x03"
-    # chars_to_ignore = "[\:\-‑;()«»…\]\[/\*–‽+\%&_\\½√><|€™$•¼}º{~—=“\"”″‟„’'‘`ʽ']\n\x01\x031234567890"
+def remove_special_chars(item, cp):
+    chars_to_ignore = "[\:\-‑;()«»…\]\[/\*–‽+\%&_\\½√>€™$•¼}º{~—=“\"”″‟„’'‘`ʽ']\n\x01\x03"
+    # chars_to_ignore = "[\:\-‑;()«»…\]\[/\*–‽+\%&_\\½√>€™$•¼}º{~—=“\"”″‟„’'‘`ʽ']\n\x01\x031234567890"
     if not cp:
         chars_to_ignore = chars_to_ignore + "\.\,\?\¿\¡\!"
-        item[tag] = item[tag].lower()
-    item[tag] = re.sub(rf"[{re.escape(chars_to_ignore)}]", " ", item[tag]) # replace chars by space and lower all
-    item[tag] = re.sub(r" +", " ", item[tag]).strip() # merge multiple spaces and erase last space
+        item["text"] = item["text"].lower()
+    item["text"] = re.sub(rf"[{re.escape(chars_to_ignore)}]", " ", item["text"]) # replace chars by space and lower all
+    item["text"] = re.sub(r" +", " ", item["text"]).strip() # merge multiple spaces and erase last space
     return item
 
-def replace_diacritics(item, lang, tag):
+def replace_diacritics(item, lang):
     if lang == "eu":
-        item[tag] = re.sub(r"[éèëēê]", "e", item[tag])
-        item[tag] = re.sub(r"[ãâāáàä]", "a", item[tag])
-        item[tag] = re.sub(r"[úùūüû]", "u", item[tag])
-        item[tag] = re.sub(r"[ôōóòöõ]", "o", item[tag])
-        item[tag] = re.sub(r"[ćç]", "c", item[tag])
-        item[tag] = re.sub(r"[ïīíìî]", "i", item[tag])
+        item["text"] = re.sub(r"[éèëēê]", "e", item["text"])
+        item["text"] = re.sub(r"[ãâāáàä]", "a", item["text"])
+        item["text"] = re.sub(r"[úùūüû]", "u", item["text"])
+        item["text"] = re.sub(r"[ôōóòöõ]", "o", item["text"])
+        item["text"] = re.sub(r"[ćç]", "c", item["text"])
+        item["text"] = re.sub(r"[ïīíìî]", "i", item["text"])
     elif lang == "es":
-        item[tag] = re.sub(r"[èëēê]", "e", item[tag])
-        item[tag] = re.sub(r"[ãâāàä]", "a", item[tag])
-        item[tag] = re.sub(r"[ùūû]", "u", item[tag])
-        item[tag] = re.sub(r"[ôōòöõ]", "o", item[tag])
-        item[tag] = re.sub(r"[ćç]", "c", item[tag])
-        item[tag] = re.sub(r"[ïīìî]", "i", item[tag])
+        item["text"] = re.sub(r"[èëēê]", "e", item["text"])
+        item["text"] = re.sub(r"[ãâāàä]", "a", item["text"])
+        item["text"] = re.sub(r"[ùūû]", "u", item["text"])
+        item["text"] = re.sub(r"[ôōòöõ]", "o", item["text"])
+        item["text"] = re.sub(r"[ćç]", "c", item["text"])
+        item["text"] = re.sub(r"[ïīìî]", "i", item["text"])
     else:
         print("ERROR: Wrong Language, only supported: EU or ES")
     return item
 
 @print_separator(".")
-def clean_sentences(data, lang, cp: bool = False, tag: str="text"):
+def clean_sentences(data, lang, cp: bool = False):
     lang.lower()
     clean_data = []
     unclean_char_list = set()
     clean_char_list = set()
     for item in data:
-        unclean_char_list.update(set(item[tag]))
-        clean_item = remove_special_chars(item,cp,tag)
-        clean_item = replace_diacritics(clean_item,lang,tag)
+        unclean_char_list.update(set(item["text"]))
+        clean_item = remove_special_chars(item,cp)
+        clean_item = replace_diacritics(clean_item,lang)
         clean_data.append(clean_item)
-        clean_char_list.update(set(clean_item[tag]))
+        clean_char_list.update(set(clean_item["text"]))
     print(f"\nData character list before cleaning: Size = {len(unclean_char_list)}\n {sorted(unclean_char_list)}")
     print(f"\nData character list after cleaning: Size = {len(clean_char_list)}\n {sorted(clean_char_list)}")
     return clean_data
@@ -267,74 +267,32 @@ def download_dataset(language, split):
         data.append(item)
     write_manifest(manifest_filepath, data)
 
-def calculate_wer(item, normalizer):
-    reference = item["text"]
-    hypothesis = item["pred_text"]
-    # reference = normalizer(item["text"]).strip()
-    # hypothesis = normalizer(item["pred_text"]).strip()
-    wer = jiwer.wer(reference, hypothesis)
-    return wer
+def capitalize_corpus(data,orig_data):
+    cap_data = []
+    for orig_item in tqdm(orig_data):
+        _, orig_audio_name = os.path.split(orig_item["audio_filepath"])
+        for item in data:
+            _, audio_name = os.path.split(item["audio_filepath"])
+            if orig_audio_name[:-4] == audio_name[:-4]:            
+                cap_data.append(orig_item)
+    return cap_data
 
-def print_result(item,wer):
-    print(" Reference: ",item["text"])
-    print("Hypothesis: ",item["pred_text"])
-    print("  Pred_WER: ",item["wer"])
-    print("  Calc_WER: ",wer)
-    print("---------------------")
-
-def evaluate_wer(data, manifest_name: str="sample_file"):
-    # Calculate WER with an without C&P and returns the orgiinal data with those 2 wers per item
-    wer_list = []
-    wer_cp_list = []
-    data_clean = copy.deepcopy(data)
-    data_clean = clean_sentences(data_clean,'eu',tag='text')
-    data_clean = clean_sentences(data_clean,'eu',tag='pred_text')
-    new_data = []
-    normalizer = BasicTextNormalizer()
-    for i,item in enumerate(data):
-        item_clean = data_clean[i]
-        # Calculate and write wer with C&P for each sentence
-        wer_cp = calculate_wer(item,normalizer)
-        wer_cp_list.append(wer_cp)
-        item['wer_cp'] = wer_cp
-        # Calculate and write normalized wer for each sentence
-        wer = calculate_wer(item_clean,normalizer)
-        wer_list.append(wer)
-        item['wer'] = wer
-        new_data.append(item)
-    wer_cp_total = sum(wer_cp_list)/len(wer_cp_list)   
-    wer_total = sum(wer_list)/len(wer_list)
-    print("Manifest:", manifest_name)
-    print(f"Total_WER_C&P: {round(wer_cp_total*100,2)} %")
-    print(f"Total_WER: {round(wer_total*100,2)} %")
-    return new_data
-
-def simple_wer(data, manifest_name):
-    # Prints the total wer and wer_cp of a file with those tags for each item
-    wer_list = []
-    wer_cp_list = []
+def data2dataset(data):
+    audio_filepaths = []
+    texts = []
+    durations = []
     for item in data:
-        wer_cp_list.append(item['wer_cp'])
-        wer_list.append(item['wer'])
-    wer_cp_total = sum(wer_cp_list)/len(wer_cp_list)   
-    wer_total = sum(wer_list)/len(wer_list)
-    print("Manifest:", manifest_name)
-    print(f"Total_WER_C&P: {round(wer_cp_total*100,2)} %")
-    print(f"Total_WER: {round(wer_total*100,2)} %\n")
-    return wer_cp_total, wer_total
-
-def compute_wer(path):
-    files = os.listdir(path)
-    for manifest in files:
-        if manifest.endswith(".json"):
-            data = read_manifest(os.path.join(path,manifest))
-            # simple_wer(data,manifest)
-            new_data = evaluate_wer(data, manifest)
-            write_manifest(os.path.join(path,manifest),new_data)
-
-# FUNCIONES PENDIENTES
-# split_dataset: Return 2 datasets, train / test using _var%.
-
+        audio_filepaths.append(item["audio_filepath"])
+        texts.append(item["text"])
+        durations.append(item["duration"])
+    df = pd.DataFrame({
+        "file_name": audio_filepaths,
+        "text": texts,
+        "duration": durations
+    })
+    dataset = Dataset.from_pandas(df)
+    return dataset
+    
 
 #############################################################
 def main_leakSearch():
@@ -357,44 +315,39 @@ def main_leakSearch():
         evaluate_leak(target_data=target_data,test_data=test_data,target_name=os.path.split(target_txt)[1],test_name=os.path.split(test_manifest)[1])
 
 def main_datasetDownload():
-    language = "es" # es, eu, bi
+    language = "eu" # es, eu, bi
     splits = ["train_clean","validation","test"]
     for split in splits:
         download_dataset(language,split)
 
-def main_convert2mp3():
-    manifest = "/scratch/asierhv/manifests/composite_corpus_eu/json_mp3/localtest_ahomytts.json"
-    output_dir = "/scratch/asierhv/composite_corpus_eu/data/localtest_ahomytts"
-    data = read_manifest(manifest)
-    convert2mp3(data,output_dir)
-
 def main():
-    model_size_list = ["tiny","base","small","medium","large","large-v2"]
-    for model_size in model_size_list:
-        # model = f"whisper-{model_size}-eu-composite_corpus_eu"
-        model = f"zuazo-whisper-{model_size}-eu-cv16_1"
-        
-        lm = "no_LM"
-        # lm = "with_LM"
+    # manifest = "/mnt/aholab/asierhv/frases_eva/250k_frases.json"
+    # data = read_manifest(manifest)
+    # clean_data = clean_sentences(data,'eu')
+    # write_manifest(manifest.replace(".json","_processed.json"),clean_data)
+    
+    # manifest = "/mnt/aholab/asierhv/ASR_eu_test_files/C&P_CORPUS/test_CV16+openSLR+gtts_parliament_eu.json"
+    # orig_manifest = "/mnt/aholab/asierhv/ASR_eu_test_files/C&P_CORPUS/test_CV16+openSLR+gtts_parliament_eu_C&P.json"
+    # orig_data = read_manifest(orig_manifest)
+    # data = read_manifest(manifest)
+    # cap_data = capitalize_corpus(data,orig_data)
+    # write_manifest(manifest.replace(".json","_C&P.json"),cap_data)
+    
+    csv = "/mnt/aholab/asierhv/composite_corpus_eu/metadata/test_cv.csv"
+    data = tsv2data(csv,"")
+    dataset = data2dataset(data)
+    dataset.save_to_disk("/mnt/aholab/asierhv/composite_corpus_eu/prueba")
 
-        path = "/scratch/asierhv/results/predictions/"+model+"_predictions/"+lm
-        # path = "/scratch/asierhv/results/predictions/mp3/"+model+"_predictions/"+lm
-        
-        # path = "/scratch/asierhv/results/predictions/pruebas"
-        
-        # compute_wer(path)
-        files = os.listdir(path)
-        wer_summary_list = []
-        for manifest in files:
-            if manifest.endswith(".json"):
-                data = read_manifest(os.path.join(path,manifest))
-                wer_cp, wer = simple_wer(data,manifest)
-                wer_summary = {"model": model,"manifest": manifest,"wer_cp": wer_cp, "wer": wer}
-                wer_summary_list.append(wer_summary)
-                # new_data = evaluate_wer(data, manifest)
-                # write_manifest(os.path.join(path,manifest),new_data)
-        write_manifest(os.path.join(path,"wer_summary.json"),wer_summary_list)
-            
+    # manifest1 = "/mnt/aholab/asierhv/composite_corpus_eu/metadata/train.json"
+    # manifest2 = "/mnt/aholab/asierhv/composite_corpus_eu/metadata/test_cv.json"
+    # manifest3 = "/mnt/aholab/asierhv/composite_corpus_eu/metadata/test_oslr.json"
+    # manifest4 = "/mnt/aholab/asierhv/composite_corpus_eu/metadata/test_parl.json"
+    # manifest5 = "/mnt/aholab/asierhv/composite_corpus_eu/metadata/dev.json"
+    # manifest_list = [manifest1,manifest2,manifest3,manifest4,manifest5]
+    # for manifest in tqdm(manifest_list):
+    #     data = read_manifest(manifest)
+    #     df = data2df(data)
+    #     df.to_csv(manifest.replace("json","csv"),sep="\t",index=False)
+
 if __name__== "__main__":
-    # compute_wer("/scratch/asierhv/results/predictions/pruebas")
     main()
