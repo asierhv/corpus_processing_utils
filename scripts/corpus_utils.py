@@ -3,11 +3,15 @@ import os
 import statistics
 import openpyxl
 import logging
+import jiwer
 import pandas as pd
 from tqdm import tqdm
 import soundfile as sf
+from typing import Union, Optional, List, Tuple
+from corpus_normalizer import TextNormalizer
+from corpus_types import ItemManifest, ExcelRecord
 
-def read_manifest(manifest_filepath, verbose: bool = True):
+def read_manifest(manifest_filepath: str, verbose: bool = True) -> List[ItemManifest]:
     """
     Read a manifest file (JSONL format) into a list of dictionaries.
 
@@ -43,7 +47,13 @@ def read_manifest(manifest_filepath, verbose: bool = True):
     except:
         raise Exception(f"Manifest file could not be opened: {manifest_filepath}")
 
-def write_manifest(manifest_filepath, data, ensure_ascii: bool = False, return_manifest_filepath: bool = False, verbose: bool = True):
+def write_manifest(
+    manifest_filepath: str,
+    data: List[ItemManifest],
+    ensure_ascii: bool = False,
+    return_manifest_filepath: bool = False,
+    verbose: bool = True
+    ) -> Optional[str]:
     """
     Write a list of dictionaries to a manifest file in JSONL format.
 
@@ -85,7 +95,16 @@ def write_manifest(manifest_filepath, data, ensure_ascii: bool = False, return_m
     else:
         return None
 
-def tsv2data(tsv_filepath: str, clips_folder: str="", sep: str="\t", audio_field="path", text_field="sentence", duration_field=None, calculate_duration: bool=False, header='infer'):
+def tsv2data(
+    tsv_filepath: str,
+    clips_folder: str = "",
+    sep: str = "\t",
+    audio_field: Union[str, int] = "path",
+    text_field: Union[str, int] = "sentence",
+    duration_field: Optional[Union[str,int]] = None,
+    calculate_duration: bool = False,
+    header: Optional[Union[int, list, str]] = 'infer'
+    ) -> List[ItemManifest]:
     """
     Reads a TSV file containing audio file paths and corresponding text sentences,
     returning a structured list of dictionaries suitable for downstream processing.
@@ -164,7 +183,7 @@ def tsv2data(tsv_filepath: str, clips_folder: str="", sep: str="\t", audio_field
         data.append(item)
     return data
     
-def pairedfiles2data(clips_folder, sentences_folder):
+def pairedfiles2data(clips_folder: str, sentences_folder: str) -> List[ItemManifest]:
     """
     Build a structured dataset by pairing text files with their corresponding audio files.
 
@@ -222,7 +241,7 @@ def pairedfiles2data(clips_folder, sentences_folder):
             data.append(item)
     return data
 
-def hash_sentences(data):
+def hash_sentences(data: List[ItemManifest]) -> List[int]:
     """
     Compute hash values for the `"text"` field of each item in a dataset.
 
@@ -247,7 +266,12 @@ def hash_sentences(data):
     hashed_sentences = [hash(item["text"]) for item in tqdm(data)]
     return hashed_sentences
 
-def reduce_data(data, compare_data=None, hashed_data=None, hashed_compare=None):
+def reduce_data(
+    data: List[ItemManifest],
+    compare_data: Optional[List[ItemManifest]] = None,
+    hashed_data: Optional[List[int]] =None,
+    hashed_compare: Optional[List[int]] =None
+    ) -> List[ItemManifest]:
     """
     Reduce a dataset by removing duplicates or by filtering out items
     that appear in another dataset. Hashes of the `"text"` field are used
@@ -284,7 +308,7 @@ def reduce_data(data, compare_data=None, hashed_data=None, hashed_compare=None):
     """
     logging.info("::::: Reducing dataset :::::")
     if hashed_data is None:
-        hashed_data = [hash(item["text"]) for item in tqdm(data, desc="Hashing data")]
+        hashed_data = hash_sentences(data)
     datalen = len(data)
     if compare_data is None:
         # Remove duplicates within the same dataset
@@ -297,14 +321,18 @@ def reduce_data(data, compare_data=None, hashed_data=None, hashed_compare=None):
     else:
         # Remove items in data that exist in compare_data
         if hashed_compare is None:
-            hashed_compare = [hash(item["text"]) for item in tqdm(compare_data, desc="Hashing compare_data")]
+            hashed_compare = hash_sentences(compare_data)
         hashed_compare_set = set(hashed_compare)
         reduced_data = [item for h, item in tqdm(zip(hashed_data, data), total=datalen, desc="Filtering compare_data") if h not in hashed_compare_set]
     removed_count = datalen - len(reduced_data)
     logging.info(f"- Removed: {removed_count}/{datalen} ({round(100*removed_count/datalen, 2)}%)")
     return reduced_data
 
-def manifest_time_stats(manifest, return_stats: bool = False, verbose: bool = True):
+def manifest_time_stats(
+    manifest: Union[str, List[ItemManifest]],
+    return_stats: bool = False,
+    verbose: bool = True
+    ) -> ExcelRecord:
     """
     Compute duration statistics from a manifest and optionally print them.
 
@@ -349,91 +377,187 @@ def manifest_time_stats(manifest, return_stats: bool = False, verbose: bool = Tr
     else:
         raise Exception(f"ERROR: 'manifest' must be 'str' or 'list'")
     duration = [float(item['duration']) for item in data]
-    stats = {
+    record: ExcelRecord = {
         "filename": filename,
         "t_min": round(min(duration),2),
         "t_mean": round(statistics.mean(duration),2),
-        "t_median": round(statistics.median(duration),2),
         "t_max": round(max(duration),2),
         "t_total": [round(sum(duration),2), round(sum(duration)/3600,2)],
+        "t_median": round(statistics.median(duration),2),
         "t_total_median": [round(statistics.median(duration)*len(duration),2), round(statistics.median(duration)*len(duration)/3600,2)],
         "sentences": len(data)
     }
     if verbose:
-        logging.info(f"=============[ {stats['filename']} ]=============")
-        logging.info(f"- Min time: {stats['t_min']} s")
-        logging.info(f"- Mean time: {stats['t_mean']} s")
-        logging.info(f"- Max time: {stats['t_max']} s")
-        logging.info(f"{'-'*(30+len(stats['filename']))}")
-        logging.info(f"- Total time (sum): {stats['t_total'][0]} s | {stats['t_total'][1]} h")
-        logging.info(f"- Total sentences: {stats['sentences']}")
-        logging.info(f"{'-'*(30+len(stats['filename']))}")
-        logging.info(f"- Median time: {stats['t_median']} s")
-        logging.info(f"- Total time (median): {stats['t_total_median'][0]} s | {stats['t_total_median'][1]} h")
-        logging.info(f"{'='*(30+len(stats['filename']))}")
+        logging.info(f"=============[ {record['filename']} ]=============")
+        logging.info(f"- Min time: {record['t_min']} s")
+        logging.info(f"- Mean time: {record['t_mean']} s")
+        logging.info(f"- Max time: {record['t_max']} s")
+        logging.info(f"{'-'*(30+len(record['filename']))}")
+        logging.info(f"- Total time (sum): {record['t_total'][0]} s | {record['t_total'][1]} h")
+        logging.info(f"- Total sentences: {record['sentences']}")
+        logging.info(f"{'-'*(30+len(record['filename']))}")
+        logging.info(f"- Median time: {record['t_median']} s")
+        logging.info(f"- Total time (median): {record['t_total_median'][0]} s | {record['t_total_median'][1]} h")
+        logging.info(f"{'='*(30+len(record['filename']))}")
     if return_stats:
-        return stats
+        return record
     
-def stats2xlsx(stats_list, dst_xlsx_filepath):
+def calculate_wer(
+    manifest: Union[str, List[ItemManifest]],
+    lang: str="es",
+    text_tag: str="text",
+    cp_text_tag: str="cp_text",
+    pred_text_tag: str="pred_text",
+    cp_pred_text_tag: str="cp_pred_text",
+    return_wer: bool=False,
+    verbose: bool=True
+    ) -> Union[None, Tuple[List[ItemManifest], ExcelRecord]]:
     """
-    Export a list of statistics dictionaries to an Excel file.
+    Calculate sentence-level and corpus-level Word Error Rate (WER) from a manifest file.
 
     Parameters
     ----------
-    stats_list : list of dict
-        Each dictionary should contain the keys:
-            - "filename"
-            - "t_min"
-            - "t_mean"
-            - "t_max"
-            - "t_total" (a list: [total_seconds, total_hours])
-            - "sentences"
-    
-    dst_xlsx_filepath : str
-        Path where the Excel (.xlsx) file will be saved.
+    manifest : str or list
+        - If a string: treated as a filepath to a manifest JSON/JSONL file
+          readable by `read_manifest()`.  
+        - If a list: assumed to be an already-loaded list of dicts where each
+          item contains a `"text"` and `"pred_text"` fields.
+
+    lang : str, optional (default="es")
+        Language code used for text normalization.
+
+    text_tag : str, optional (default="text")
+        Key in the manifest representing the reference text.
+
+    cp_text_tag : str, optional (default="cp_text")
+        Key representing case-preserved reference text. Used only when `cp_field=True`.
+
+    pred_text_tag : str, optional (default="pred_text")
+        Key representing the predicted text.
+
+    cp_pred_text_tag : str, optional (default="cp_pred_text")
+        Key representing case-preserved predicted text. Used only when `cp_field=True`.
+
+    return_wer : bool, optional (default=False)
+        If True, returns both the cleaned manifest entries and the result dictionary.
+
+    verbose : bool, optional (default=True)
+        If True, logs mean and total WER values to the console.
 
     Returns
     -------
-    None
+    tuple (list of dict, dict), optional
+        Returned only if `return_wer=True`.
+
+        - data_clean : list of dict  
+            Manifest entries after text normalization and per-sentence WER annotation.  
+            Keys added:
+                * "wer"  
+                * "wer_cp"
+
+        - result : dict  
+            Summary WER statistics containing:
+                * "filename"  
+                * "mean_wer"  
+                * "total_wer"  
+                * "mean_wer_cp"
+                * "total_wer_cp"
 
     Notes
     -----
-    - The Excel file will have a single sheet named "Stats".
-    - Columns include: filename, min/mean/max times, total time in hours, and number of sentences.
-    - Existing files at the destination path will be overwritten.
+    - Text normalization is performed using `TextNormalizer`, once for reference text and once for predictions.
+    - Per-sentence WER is computed using `jiwer.wer()`.
+    - Corpus-level WER is computed by concatenating all texts and evaluating on the full strings.
+    - Output values are raw WER scores (0.0–1.0), not percentages.
+    - Log output shows percentages for readability.
     """
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Stats"
-    headers = ["filename", "t_min", "t_mean", "t_max", "t_total (h)", "sentences"]
-    ws.append(headers)
-    for stat in stats_list:
-        row = [
-            stat["filename"],
-            stat["t_min"],
-            stat["t_mean"],
-            stat["t_max"],
-            stat["t_total"][1],
-            stat["sentences"]
-        ]
-        ws.append(row)
-    wb.save(dst_xlsx_filepath)
+    filename = (os.path.split(manifest)[1]).replace(".json","")
+
+    data = read_manifest(manifest, verbose=False)
+    data_clean = [dict(item) for item in data] 
+
+    # Create the normalizers for each field
+    normalizer = TextNormalizer(lang=lang, tag=text_tag, verbose=False)
+    pred_normalizer = TextNormalizer(lang=lang, tag=pred_text_tag, verbose=False)
+    data_clean = normalizer(data_clean)
+    data_clean = pred_normalizer(data_clean)
     
-def resultwer2xlsx(resultwer_list, dst_xlsx_filepath):
+    if "cp_text" in data_clean[0] and "cp_pred_text" in data_clean[0]:
+        cp_field = True
+    else:
+        cp_field = False
+    
+    if cp_field:
+        cp_normalizer = TextNormalizer(lang=lang, tag=cp_text_tag, keep_cp=True, verbose=False)
+        cp_pred_normalizer = TextNormalizer(lang=lang, tag=cp_pred_text_tag, keep_cp=True, verbose=False)
+        data_clean = cp_normalizer(data_clean)
+        data_clean = cp_pred_normalizer(data_clean)
+
+    wer_list = []
+    wer_cp_list = []
+    total_text = ""
+    total_cp_text = ""
+    total_pred_text = ""
+    total_cp_pred_text = ""
+    for item in data_clean:
+        # Calculate normalized wer for each sentence
+        wer = jiwer.wer(item["text"], item["pred_text"])
+        wer_list.append(wer)
+        item['wer'] = wer
+        total_text += " " + item["text"]
+        total_pred_text += " " + item["pred_text"]
+
+        if cp_field:
+            # Calculate wer with C&P for each sentence
+            wer_cp = jiwer.wer(item["cp_text"], item["cp_pred_text"])
+            wer_cp_list.append(wer_cp)
+            item['wer_cp'] = wer_cp
+            total_cp_text += " " + item["cp_text"]
+            total_cp_pred_text += " " + item["cp_pred_text"]
+
+    total_wer = jiwer.wer(total_text.strip(), total_pred_text.strip())   
+    mean_wer = sum(wer_list)/len(wer_list)
+    if cp_field:
+        total_wer_cp = jiwer.wer(total_cp_text.strip(), total_cp_pred_text.strip())
+        mean_wer_cp = sum(wer_cp_list)/len(wer_cp_list)
+    else:
+        total_wer_cp = None
+        mean_wer_cp = None
+
+    record: ExcelRecord = {
+        "filename": filename,
+        "mean_wer": mean_wer,
+        "total_wer": total_wer,
+        "mean_wer_cp": mean_wer_cp,
+        "total_wer_cp": total_wer_cp,
+        }
+    
+    if verbose:
+        logging.info(f"=============[ {record['filename']} ]=============")
+        logging.info(f"- Mean WER: {round(record['mean_wer']*100,2)} %")
+        logging.info(f"- Total WER: {round(record['total_wer']*100,2)} %")
+        if cp_field:
+            logging.info(f"{'-'*(30+len(record['filename']))}") 
+            logging.info(f"- Mean WER C&P: {round(record['mean_wer_cp']*100,2)} %")
+            logging.info(f"- Total WER C&P: {round(record['total_wer_cp']*100,2)} %")
+        logging.info(f"{'='*(30+len(record['filename']))}")    
+    if return_wer: 
+        return data_clean, record
+
+def write_excel_record(
+    excel_record: Union[List[ExcelRecord], ExcelRecord],
+    dst_filepath: str,
+    title: Optional[str] = None   
+    ):
     """
     Export a list of WER (Word Error Rate) results to an Excel file.
 
     Parameters
     ----------
-    resultwer_list : list of dict
-        Each dictionary should contain the keys:
-            - "filename"
-            - "mean_wer_cp"
-            - "mean_wer"
-            - "total_wer_cp"
-            - "total_wer"
+    excel_record : list of dict or just a dict
+        Should be in teh format ExcelRecord
     
-    dst_xlsx_filepath : str
+    dst_filepath : str
         Path where the Excel (.xlsx) file will be saved.
 
     Returns
@@ -442,22 +566,29 @@ def resultwer2xlsx(resultwer_list, dst_xlsx_filepath):
 
     Notes
     -----
-    - The Excel file will have a single sheet named "WER Results".
-    - Columns include: filename, mean WER with/without case-preserving, and total WER with/without case-preserving.
+    - The Excel file will have a single sheet named as `"title"`.
     - Existing files at the destination path will be overwritten.
     """
+    if isinstance(excel_record, dict):
+        excel_record = [excel_record]
+    
+    headers = list(excel_record[0].keys())
+    if not title:
+        if 'mean_wer' in headers:
+            title = "WER Results"
+        elif 't_mean' in headers:
+            title = "Time Stats"
+    
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "WER Results"
-    headers = ["filename", "mean_wer_cp", "mean_wer", "total_wer_cp", "total_wer"]
+    ws.title = title
     ws.append(headers)
-    for resultwer in resultwer_list:
-        row = [
-            resultwer["filename"],
-            resultwer["mean_wer_cp"],
-            resultwer["mean_wer"],
-            resultwer["total_wer_cp"],
-            resultwer["total_wer"]
-        ]
+    for record in excel_record:
+        row = []
+        for header in headers:
+            element = record[header]
+            if isinstance(element, list):
+                element = element[1]
+            row.append(element)
         ws.append(row)
-    wb.save(dst_xlsx_filepath)
+    wb.save(dst_filepath)

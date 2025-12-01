@@ -1,12 +1,22 @@
 import re
 import logging
 from tqdm import tqdm
+from typing import Union, Optional, List
+from corpus_types import ItemManifest
 
 class TextNormalizer:
-    def __init__(self, lang: str, tag: str = "text", keep_cp: bool = False, 
-                 remove_acronyms: bool = False, remove_emptytext: bool = True, blacklist_terms = None, 
-                 min_duration: float = 0.025, max_duration: float = 240,
-                 verbose: bool = True, verbose_type: str = "simple"):
+    def __init__(
+        self,
+        lang: str,
+        tag: str = "text",
+        keep_cp: bool = False, 
+        remove_acronyms: bool = False,
+        remove_emptytext: bool = True,
+        blacklist_terms: Optional[List[str]] = None, 
+        min_duration: float = 0.025,
+        max_duration: float = 240,
+        verbose: Union[bool,str] = True
+        ):
         """
         Initializes the sentence cleaner with the necessary parameters.
         :param lang: Language ('es' or 'eu') if Bilingual 'es+eu' is wanted just select 'es'.
@@ -16,8 +26,7 @@ class TextNormalizer:
         :param remove_emptytext: Whether to remove emptytext entries
         :param blacklist_terms: List of terms to remove (if provided).
         :param min/max_duration: duration threshold in seconds for the audios, will remove the sentence if it's out of bounds.
-        :param verbose: Whether to show logging info.
-        :param verbose_type: 'simple' or 'all'
+        :param verbose: 'False= Not show anything, 'True'= Show basic logging info, 'all'= Show detailed logging info.
         """
         self.lang = lang.lower()
         if self.lang not in ['es', 'eu']:
@@ -30,7 +39,6 @@ class TextNormalizer:
         self.min_duration = min_duration
         self.max_duration = max_duration
         self.verbose = verbose
-        self.verbose_type = verbose_type
 
         self.unclean_char_list = set()
         self.clean_char_list = set()
@@ -49,7 +57,7 @@ class TextNormalizer:
             r"[ż]": "z", r"[ ]": " "
         }
 
-    def replace_diacritics(self, item):
+    def replace_diacritics(self, item: ItemManifest) -> ItemManifest:
         """Replaces diacritic characters with their normalized versions."""
         for pattern, replacement in self.diacritic_map.items():
             item[self.tag] = re.sub(pattern, replacement, item[self.tag])
@@ -62,7 +70,7 @@ class TextNormalizer:
                 item[self.tag] = re.sub(pattern, replacement, item[self.tag])
         return item
 
-    def remove_special_chars_whitelist(self, item):
+    def remove_special_chars_whitelist(self, item: ItemManifest) -> ItemManifest:
         """Removes not allowed special characters."""
         allowed_chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZáéíóúüÁÉÍÓÚÜñÑ "
         if self.keep_cp:
@@ -77,21 +85,20 @@ class TextNormalizer:
             item[self.tag] = item[self.tag].lower()
         return item
     
-    def in_duration_threshold(self, item):
+    def in_duration_threshold(self, item: ItemManifest) -> ItemManifest:
         """Returns True if duration is within min/max threshold or missing; False if duration exists and is out of bounds."""
         duration = item.get("duration")
         if duration is None:
             return True
         if not (self.min_duration <= duration <= self.max_duration):
-            if self.verbose:
-                logging.info(f"Removed (duration out of bounds): {item.get('audio_filepath', 'Unknown file')}")
             return False
         return True
 
-    def clean_sentences(self, data):
+    def clean_sentences(self, data: List[ItemManifest]) -> List[ItemManifest]:
         clean_data = []
         emptytext_entries = []
         acronyms_entries = []
+        outbound_entries = []
         for item in tqdm(data, disable=not self.verbose):
             if self.in_duration_threshold(item):
                 acronyms = bool(re.search(r'\b[\w\d]*[A-Z]{2,}[\w\d]*\b', item[self.tag])) if self.remove_acronyms else False
@@ -106,27 +113,43 @@ class TextNormalizer:
                     self.clean_char_list.update(set(item[self.tag]))
                 else:
                     acronyms_entries.append(item)
+            else: 
+                outbound_entries.append(item)
+                
         if self.verbose:
+            l = len(outbound_entries)
+            m = len(emptytext_entries)
+            n = len(acronyms_entries)
+            total = len(data)
+            
             logging.info(f"::::: Character List :::::")
             logging.info(f"- Before cleaning (size: {len(self.unclean_char_list)})\n  {sorted(self.unclean_char_list)}")
             logging.info(f"- After cleaning (size: {len(self.clean_char_list)})\n  {sorted(self.clean_char_list)}")
+            
             logging.info(f"\n::::: Removed sentences :::::")
-            n = len(acronyms_entries)
-            m = len(emptytext_entries)
-            total = len(data)
-            logging.info(f"- Total: {n+m}/{total} ({round(100*(n+m) / total, 2)}%)")
-            logging.info(f"- Entries with Acronyms:")
-            logging.info(f"  · {n}/{total} ({round(100*n / total, 2)}%)")
-            if self.verbose_type == 'all':
-                for entry in emptytext_entries:
+            logging.info(f"- Total: {l+m+n}/{total} ({round(100*(l+m+n) / total, 2)}%)")
+            
+            logging.info(f"- Entries out of bounds:")
+            logging.info(f"  · {l}/{total} ({round(100*l / total, 2)}%)")
+            if self.verbose == 'all':
+                for entry in outbound_entries:
                     logging.info(f"    audio: {entry['audio_filepath']}")
+                    logging.info(f" duration: {entry['duration']}")
+                    
             logging.info(f"- Entries without Text:")
             logging.info(f"  · {m}/{total} ({round(100*m / total, 2)}%)")
-            if self.verbose_type == 'all':
+            if self.verbose == 'all':
+                for entry in emptytext_entries:
+                    logging.info(f"    audio: {entry['audio_filepath']}")     
+                    
+            logging.info(f"- Entries with Acronyms:")
+            logging.info(f"  · {n}/{total} ({round(100*n / total, 2)}%)")
+            if self.verbose == 'all':
                 for entry in acronyms_entries:
                     logging.info(f"    audio: {entry['audio_filepath']}")
-                    logging.info(f"     text: {entry[self.tag]}")
+                    logging.info(f"     text: {entry[self.tag]}")              
+            
         return clean_data
     
-    def __call__(self,data):
+    def __call__(self, data: List[ItemManifest]):
         return self.clean_sentences(data)

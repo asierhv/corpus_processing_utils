@@ -1,12 +1,13 @@
 import os
 import corpus_utils as cu
-from normalizer import TextNormalizer
+from corpus_normalizer import TextNormalizer
 import random
 import logging
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-path = "./common_voice_v18/eu" # Path to the directory where the comomn_voice files are
+# path = "./common_voice_v18/eu" # Path to the directory where the comomn_voice files are
+path = "/mnt/corpus/Common_Voice_v18.0/eu"
 
 validated_tsv = f"{path}/validated.tsv" # Contains all the data (train + test + dev + others)
 test_tsv = f"{path}/test.tsv" # Contains only the test data
@@ -16,13 +17,13 @@ clips_folder = f"{path}/clips"
 manifests_path = f"./manifests"
 os.makedirs(manifests_path, exist_ok=True)
 
-normalizer = TextNormalizer(lang="eu", remove_acronyms=True)
+normalizer = TextNormalizer(lang="eu", remove_acronyms=True, verbose='all')
 
 dataset={}
 for tsv in [validated_tsv, test_tsv, dev_tsv]:
     name = os.path.split(tsv)[1][:-4]
     manifest_filepath = f"{manifests_path}/{name}.json"
-    data = cu.tsv2data(tsv_filepath=tsv, clips_folder=clips_folder, audio_field="path", calculate_duration=True, text_field="sentence")
+    data = cu.tsv2data(tsv_filepath=tsv, clips_folder=clips_folder, audio_field="path", calculate_duration=False, text_field="sentence")
 
     # Clean and write the manifest
     data = normalizer(data)
