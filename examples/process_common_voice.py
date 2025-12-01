@@ -6,8 +6,7 @@ import logging
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-# path = "./common_voice_v18/eu" # Path to the directory where the comomn_voice files are
-path = "/mnt/corpus/Common_Voice_v18.0/eu"
+path = "./common_voice_v18/eu" # Path to the directory where the comomn_voice files are
 
 validated_tsv = f"{path}/validated.tsv" # Contains all the data (train + test + dev + others)
 test_tsv = f"{path}/test.tsv" # Contains only the test data
